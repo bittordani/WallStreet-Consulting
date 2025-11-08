@@ -1,0 +1,27 @@
+#chromadb
+sentence-transformers
+#yfinance
+#pandas
+#python-dotenv
+
+# RAG Base
+chromadb>=0.5.5
+numpy
+pandas
+python-dotenv
+pydantic
+tqdm
+
+# Data sources (stocks)
+yfinance
+
+# FastAPI + Server
+fastapi
+uvicorn
+
+# LLM (modo opcional)
+google-generativeai    # si usas Gemini
+openai                 # si activas OpenAI (aunque USE_LLM=false por defecto)
+
+# Utils
+requests

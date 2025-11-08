@@ -1,0 +1,16 @@
+version: "3.9"
+services:
+  app:
+    build: .
+    container_name: rag-djia
+    ports:
+      - "8000:8000"
+    # Montamos volumen para persistir la Chroma DB y (opcional) data/
+    volumes:
+      - ./chroma:/app/chroma
+      - ./data:/app/data
+    # Cargamos variables desde tu .env local
+    env_file:
+      - .env
+    # Opcional: reinicio automático si se cae
+    restart: unless-stopped
