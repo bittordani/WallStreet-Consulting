@@ -125,6 +125,7 @@ Para configurar el entorno y ejecutar el proyecto, sigue estos pasos:
 
 
 ## 🐳 Ejecutar con Docker (recomendado)
+Si lanzaste Uvicorn con la opción anterior asegúrate de liberar el puerto 8000 antes de levantar los contenedores con Docker. 
 
 1️⃣ Construir
 ```bash
@@ -136,10 +137,20 @@ docker compose up -d
 ```
 3️⃣ Probar
 ```bash
+# Ingesta completa añade un ticker entre corchetes para ingesta concreta)
+curl -X POST http://localhost:8000/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"tickers": []}'
+
+# También puedes realizar una ingesta de los ticket que quieras
+curl -X POST http://localhost:8000/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"tickers": ["IBM","MSFT"]}'
+
+# Haz una consulta
 curl -X POST "http://127.0.0.1:8000/ask" \
      -H "Content-Type: application/json" \
      -d '{"question": "¿Cómo va Microsoft hoy?"}'
-
 ```
 ---
 
