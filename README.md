@@ -104,8 +104,9 @@ Para configurar el entorno y ejecutar el proyecto, sigue estos pasos:
 ## 🚀 Ejecutar en Local (sin Docker)
    
   Opción A: Ejecución desde Consola
-  Usa tu script principal de consola (el que está en scripts/):
+  Realiza la primera ingesta y haz tu primera consulta:
   ```bash
+  python src/ingest/ingest_djia.py
   ./scripts/rag.py "¿Cómo va Microsoft hoy?"
   ```
   Opción B: Ejecución de la API (FastAPI)
