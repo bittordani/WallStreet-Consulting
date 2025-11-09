@@ -1,6 +1,6 @@
 # 🏦 WallStreet Consulting — Asistente Bursátil con RAG + FastAPI + Docker
 
-WallStreet Consulting es un asistente financiero capaz de responder preguntas como:
+WallStreet Consulting es un asistente financiero sobre del Dow Jones capaz de responder preguntas como:
 
 > "¿Cómo va Microsoft hoy?"  
 > "¿Qué cambio registró McDonalds ayer?"  
@@ -76,7 +76,10 @@ Para configurar el entorno y ejecutar el proyecto, sigue estos pasos:
   ```
   2️⃣ Crear y activar un entorno virtual:
   ```bash
+  # Crear el entorno virtual (elige uno según tu sistema)
   python -m venv .venv
+  # o
+  python3 -m venv .venv
   # En Windows:
   .\.venv\Scripts\activate
   # En Linux/macOS:
