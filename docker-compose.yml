@@ -1,8 +1,7 @@
-version: "3.9"
 services:
   app:
     build: .
-    container_name: rag-djia
+    #container_name: rag-djia
     ports:
       - "8000:8000"
     # Montamos volumen para persistir la Chroma DB y (opcional) data/
