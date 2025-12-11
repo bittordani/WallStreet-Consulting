@@ -44,10 +44,17 @@ def ingest_endpoint(req: IngestRequest):
     - days: cuántos días hacia atrás descargar por ticker.
     - cleanup_days: elimina de Chroma los documentos con fecha anterior a hoy - cleanup_days.
     """
-    if req.tickers:
-        tickers = [t.strip().upper() for t in req.tickers if t.strip()]
-    else:
+
+    # Normalizamos tickers recibidos
+    raw_tickers = (req.tickers or [])
+    tickers_clean = [t.strip().upper() for t in raw_tickers if t and t.strip()]
+
+    # Caso especial: Swagger pone por defecto ["string"] como ejemplo.
+    # Si el usuario no lo cambia, lo ignoramos y usamos todo el DJIA.
+    if not tickers_clean or tickers_clean == ["STRING"]:
         tickers = list(DJIA_TICKERS)
+    else:
+        tickers = tickers_clean
 
     n_docs = ingest_djia(tickers, days=req.days)
     cleanup_djia(days=req.cleanup_days)
