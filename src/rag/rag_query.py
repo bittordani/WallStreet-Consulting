@@ -8,6 +8,7 @@ from src.ingest.chroma_client import col
 from src.ingest.embeddings import encode
 from src.ingest.tickers import DJIA_TICKERS
 from src.llm.llm_client import generate_answer
+from datetime import datetime, timedelta, timezone
 
 
 # --------- detección del ticker ---------
@@ -53,16 +54,24 @@ def _detect_ticker(question: str) -> Optional[str]:
 
 def _vector_search(question: str, ticker: str, n_results: int = 5) -> List[Dict[str, Any]]:
     """
-    Hace búsqueda semántica en la base vectorial de Chroma,
-    limitada al ticker indicado. Devuelve una lista de hits con:
-      { id, document, metadata, distance }
+    Búsqueda semántica en Chroma forzando recencia:
+    solo busca dentro de los últimos 10 días (date_num).
     """
     qemb = encode([question], is_query=True)
+
+    cutoff_num = int(
+        (datetime.now(timezone.utc).date() - timedelta(days=10)).strftime("%Y%m%d")
+    )
 
     res = col.query(
         query_embeddings=qemb,
         n_results=n_results,
-        where={"ticker": ticker},   # filtramos por ticker (metadatos de ingesta)
+        where={
+            "$and": [
+                {"ticker": ticker},
+                {"date_num": {"$gte": cutoff_num}},
+            ]
+        },
         include=["documents", "metadatas", "distances"],
     )
 
@@ -84,28 +93,24 @@ def _vector_search(question: str, ticker: str, n_results: int = 5) -> List[Dict[
     return hits
 
 
+
 def _date_num_from_meta(meta: Dict[str, Any]) -> int:
-    """
-    Extrae una "fecha_num" (YYYYMMDD) de los metadatos si es posible.
-    Sirve para ordenar documentos de más reciente a más antiguo.
-    """
     meta = meta or {}
 
-    # 1) Preferimos 'fecha_num' (métrica diaria)
-    if "fecha_num" in meta:
+    # 1) date_num (ingesta OHLC)
+    if "date_num" in meta:
         try:
-            return int(meta["fecha_num"])
+            return int(meta["date_num"])
         except Exception:
             pass
 
-    # 2) Si no, usamos 'date' (YYYY-MM-DD de la ingesta OHLC)
+    # 2) date (YYYY-MM-DD)
     if "date" in meta:
         try:
             return int(str(meta["date"]).replace("-", ""))
         except Exception:
             pass
 
-    # 3) Si no hay nada usable, devolvemos 0
     return 0
 
 
@@ -139,7 +144,8 @@ def ask(question: str) -> Dict[str, Any]:
         }
 
     # 1) Recuperar desde la base vectorial
-    hits = _vector_search(question, ticker, n_results=5)
+    hits = _vector_search(question, ticker, n_results=60)  # o 90
+    hits_sorted = sorted(hits, key=lambda h: _date_num_from_meta(h["metadata"]), reverse=True)
 
     if not hits:
         return {
