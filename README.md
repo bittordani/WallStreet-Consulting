@@ -143,15 +143,33 @@ docker compose up -d
 # Ingesta completa añade un ticker entre corchetes para ingesta concreta)
 curl -X POST http://localhost:8000/ingest \
   -H "Content-Type: application/json" \
-  -d '{"tickers": []}'
+  -d '{
+    "tickers": [],
+    "ingest_prices": false,
+    "days": 30,
+    "cleanup_days": 30,
+    "ingest_docs": true,
+    "news_limit": 20,
+    "news_cleanup_days": 30
+  }'
 
 # También puedes realizar una ingesta de los ticket que quieras
 curl -X POST http://localhost:8000/ingest \
   -H "Content-Type: application/json" \
-  -d '{"tickers": ["IBM","MSFT"]}'
+  -d '{
+    "tickers": ["MCD"],
+    "ingest_prices": false,
+    "days": 30,
+    "cleanup_days": 30,
+    "ingest_docs": true,
+    "news_limit": 20,
+    "news_cleanup_days": 30
+  }'
 
 # Haz una consulta
 curl -X POST "http://127.0.0.1:8000/ask" \
+     -H "Content-Type: application/json" \
+     -d '{"question": "Cual es la situación actual en el mercado de MCD?"}'
      -H "Content-Type: application/json" \
      -d '{"question": "¿Cómo va Microsoft hoy?"}'
 ```
