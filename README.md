@@ -2,12 +2,11 @@
 
 WallStreet Consulting es un asistente financiero sobre del Dow Jones capaz de responder preguntas como:
 
-> "¿Cómo va Microsoft hoy?"  
-> "¿Qué cambio registró McDonalds ayer?"  
+> "¿Cuál es la situación actual en el mercado de MCD??"  
 
 El sistema combina:
 
-- **Descarga automática de datos bursátiles** (Yahoo Finance)
+- **Descarga automática de noticias bursátiles** (Yahoo Finance)
 - **Almacenamiento en Base de Datos Vectorial** (ChromaDB)
 - **Motor de Recuperación (RAG)** para encontrar el contexto correcto
 - **Generación de respuesta natural** (con o sin LLM, configurable)
