@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from src.ingest.chroma_client import col
+from src.ingest.chroma_client import col_prices, col_news
 from src.ingest.embeddings import encode
 from src.ingest.tickers import DJIA_TICKERS
 from src.llm.llm_client import generate_answer
-from datetime import datetime, timedelta, timezone
 
 
 # --------- detección del ticker ---------
@@ -50,12 +50,49 @@ def _detect_ticker(question: str) -> Optional[str]:
     return None
 
 
-# --------- búsqueda vectorial en Chroma ---------
+# --------- routing: ¿precios o documentos? ---------
 
-def _vector_search(question: str, ticker: str, n_results: int = 5) -> List[Dict[str, Any]]:
+_PRICE_KEYWORDS = (
+    "precio", "cotiza", "cotización", "cierre", "apertura", "máximo", "minimo", "mínimo",
+    "volumen", "variación", "variacion", "sube", "baja", "%", "porcentaje",
+    "hoy", "ayer", "último", "ultimo", "sesión", "sesion"
+)
+
+_DOCS_KEYWORDS = (
+    "noticia", "noticias", "titular", "titulares", "qué ha pasado", "que ha pasado",
+    "por qué", "porque", "motivo", "causa", "razón", "razones", "riesgo", "riesgos",
+    "informe", "filing", "10-k", "10q", "10-q", "8-k", "earnings", "resultados",
+    "guidance", "comunicado", "press release", "rumor", "rumores"
+)
+
+
+def _infer_mode(question: str) -> str:
     """
-    Búsqueda semántica en Chroma forzando recencia:
-    solo busca dentro de los últimos 10 días (date_num).
+    Decide si la pregunta debe responderse con:
+      - mode="prices": datos estructurados (precios)
+      - mode="docs": RAG de documentos (noticias/filings)
+    Heurística simple y efectiva para demo/entrega.
+    """
+    q = (question or "").strip().lower()
+
+    # Si pregunta explícitamente por noticias/razones, manda a docs
+    if any(k in q for k in _DOCS_KEYWORDS):
+        return "docs"
+
+    # Si pregunta por precio / hoy / cierre / etc, manda a prices
+    if any(k in q for k in _PRICE_KEYWORDS):
+        return "prices"
+
+    # Por defecto, docs (más defendible como RAG “real”)
+    return "docs"
+
+
+# --------- búsqueda vectorial ---------
+
+def _vector_search_prices(question: str, ticker: str, n_results: int = 10) -> List[Dict[str, Any]]:
+    """
+    Búsqueda semántica en Chroma (colección precios) forzando recencia:
+    últimos 10 días.
     """
     qemb = encode([question], is_query=True)
 
@@ -63,18 +100,69 @@ def _vector_search(question: str, ticker: str, n_results: int = 5) -> List[Dict[
         (datetime.now(timezone.utc).date() - timedelta(days=10)).strftime("%Y%m%d")
     )
 
-    res = col.query(
+    res = col_prices.query(
         query_embeddings=qemb,
         n_results=n_results,
         where={
             "$and": [
                 {"ticker": ticker},
                 {"date_num": {"$gte": cutoff_num}},
+                # opcional si lo tienes:
+                # {"doc_type": "prices"},
             ]
         },
         include=["documents", "metadatas", "distances"],
     )
 
+    return _normalize_hits(res)
+
+
+def _vector_search_docs(question: str, ticker: str, n_results: int = 8) -> List[Dict[str, Any]]:
+    """
+    Búsqueda semántica en Chroma (colección docs/noticias/filings).
+    Forzamos recencia suave: últimos 30 días si existe published_num.
+    """
+    qemb = encode([question], is_query=True)
+
+    cutoff_num = int(
+        (datetime.now(timezone.utc).date() - timedelta(days=30)).strftime("%Y%m%d")
+    )
+
+    # Algunos setups pueden no tener published_num al principio.
+    # Intentamos con filtro; si falla, repetimos sin filtro.
+    where_with_recency = {
+        "$and": [
+            {"ticker": ticker},
+            {"published_num": {"$gte": cutoff_num}},
+            # opcional:
+            # {"doc_type": "news"},
+        ]
+    }
+
+    try:
+        res = col_news.query(
+            query_embeddings=qemb,
+            n_results=n_results,
+            where=where_with_recency,
+            include=["documents", "metadatas", "distances"],
+        )
+        hits = _normalize_hits(res)
+        if hits:
+            return hits
+    except Exception:
+        pass
+
+    # Fallback sin recencia si aún no tienes published_num
+    res = col_news.query(
+        query_embeddings=qemb,
+        n_results=n_results,
+        where={"ticker": ticker},
+        include=["documents", "metadatas", "distances"],
+    )
+    return _normalize_hits(res)
+
+
+def _normalize_hits(res: Dict[str, Any]) -> List[Dict[str, Any]]:
     ids = (res.get("ids") or [[]])[0]
     docs = (res.get("documents") or [[]])[0]
     metas = (res.get("metadatas") or [[]])[0]
@@ -93,23 +181,27 @@ def _vector_search(question: str, ticker: str, n_results: int = 5) -> List[Dict[
     return hits
 
 
-
 def _date_num_from_meta(meta: Dict[str, Any]) -> int:
+    """
+    Para ordenar por recencia:
+      - prices: date_num / date
+      - docs: published_num / published_at
+    """
     meta = meta or {}
 
-    # 1) date_num (ingesta OHLC)
-    if "date_num" in meta:
-        try:
-            return int(meta["date_num"])
-        except Exception:
-            pass
+    for k in ("date_num", "published_num"):
+        if k in meta:
+            try:
+                return int(meta[k])
+            except Exception:
+                pass
 
-    # 2) date (YYYY-MM-DD)
-    if "date" in meta:
-        try:
-            return int(str(meta["date"]).replace("-", ""))
-        except Exception:
-            pass
+    for k in ("date", "published_at", "published"):
+        if k in meta:
+            try:
+                return int(str(meta[k]).replace("-", "")[:10].replace("-", ""))
+            except Exception:
+                pass
 
     return 0
 
@@ -118,18 +210,20 @@ def _date_num_from_meta(meta: Dict[str, Any]) -> int:
 
 def ask(question: str) -> Dict[str, Any]:
     """
-    Punto de entrada del sistema RAG.
+    Punto de entrada del sistema.
 
-    1. Detecta el ticker a partir de la pregunta.
-    2. Recupera documentos relevantes de la base vectorial Chroma.
-    3. Ordena los documentos por fecha (más recientes primero) y construye un CONTEXTO.
-    4. Llama a generate_answer() para que el LLM (Gemini/OpenAI o modo free)
-       genere una respuesta usando EXCLUSIVAMENTE ese contexto (BBDD vectorial).
+    - Detecta ticker.
+    - Decide modo: prices vs docs.
+    - Recupera hits de la colección correspondiente.
+    - Construye contexto:
+        * docs: con etiquetas [S1], [S2]... (para citas)
+        * prices: por fecha reciente
+    - Llama a generate_answer(question, context, sources=..., mode=...)
     """
     question = (question or "").strip()
     if not question:
         return {
-            "answer": "Formula una pregunta, por ejemplo: «¿Cómo va Microsoft hoy?»",
+            "answer": "Formula una pregunta, por ejemplo: «¿Qué noticias recientes hay sobre Microsoft?» o «¿Cuál fue el último cierre de MSFT?»",
             "sources": [],
         }
 
@@ -143,37 +237,52 @@ def ask(question: str) -> Dict[str, Any]:
             "sources": [],
         }
 
-    # 1) Recuperar desde la base vectorial
-    hits = _vector_search(question, ticker, n_results=60)  # o 90
-    hits_sorted = sorted(hits, key=lambda h: _date_num_from_meta(h["metadata"]), reverse=True)
+    mode = _infer_mode(question)
+
+    # 1) Recuperar desde la base vectorial (colección según modo)
+    if mode == "prices":
+        hits = _vector_search_prices(question, ticker, n_results=60)
+    else:
+        hits = _vector_search_docs(question, ticker, n_results=12)
 
     if not hits:
-        return {
-            "answer": (
-                f"No tengo datos ingestados en la base vectorial para {ticker} todavía. "
-                "Ejecuta la ingesta y vuelve a preguntar."
-            ),
-            "sources": [],
-        }
+        tip = (
+            f"No tengo documentos ingestados para {ticker} en el modo '{mode}'. "
+            "Ejecuta la ingesta correspondiente y vuelve a preguntar."
+        )
+        return {"answer": tip, "sources": []}
 
-    # 2) Ordenar por fecha (más reciente primero)
-    hits_sorted = sorted(
-        hits,
-        key=lambda h: _date_num_from_meta(h.get("metadata", {})),
-        reverse=True,
-    )
+    # 2) Ordenar por recencia (más reciente primero)
+    hits_sorted = sorted(hits, key=lambda h: _date_num_from_meta(h.get("metadata", {})), reverse=True)
 
-    # 3) Montar el contexto: concatenamos varios documentos ordenados
-    context_parts = []
-    for h in hits_sorted[:3]:
-        meta = h.get("metadata", {}) or {}
-        fecha = meta.get("date") or meta.get("fecha") or "fecha-desconocida"
-        context_parts.append(f"[DOC - {ticker} - {fecha}]\n{h['document']}")
+    # 3) Montar el contexto
+    if mode == "docs":
+        # Contexto con citas [S1], [S2]... (esto encaja con tu prompt de docs)
+        context_parts: List[str] = []
+        for i, h in enumerate(hits_sorted[:5], start=1):
+            meta = h.get("metadata", {}) or {}
+            published = meta.get("published_at") or meta.get("date") or "fecha-desconocida"
+            publisher = meta.get("publisher") or meta.get("source") or "fuente-desconocida"
+            url = meta.get("source_url") or meta.get("url") or ""
+            header = f"[S{i}] {ticker} · {published} · {publisher}"
+            if url:
+                header += f" · {url}"
+            context_parts.append(f"{header}\n{h.get('document','')}".strip())
+        context = "\n\n".join(context_parts)
 
-    context = "\n\n".join(context_parts)
+        sources_out = hits_sorted[:5]
 
-    # 4) Llamar al LLM / modo free para generar la respuesta final
-    #    generate_answer ya limita al CONTEXTO y no añade info externa.
-    result = generate_answer(question, context, sources=hits_sorted[:5])
+    else:
+        # Precios: context por días recientes (tu estilo anterior)
+        context_parts = []
+        for h in hits_sorted[:3]:
+            meta = h.get("metadata", {}) or {}
+            fecha = meta.get("date") or "fecha-desconocida"
+            context_parts.append(f"[DOC - {ticker} - {fecha}]\n{h.get('document','')}".strip())
+        context = "\n\n".join(context_parts)
 
+        sources_out = hits_sorted[:5]
+
+    # 4) Llamar al LLM / modo free
+    result = generate_answer(question, context, sources=sources_out, mode=mode)
     return result

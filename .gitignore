@@ -3,4 +3,5 @@ data/
 .env
 __pycache__/
 *.sqlite
-__init__.py
+__init__.py.idea/
+.idea

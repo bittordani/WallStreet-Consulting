@@ -51,24 +51,55 @@ MODEL = os.getenv("LLM_MODEL", "gemini-2.5-flash")
 SHOW_SOURCES = os.getenv("SHOW_SOURCES", "true").lower() == "true"
 
 
-def _build_prompt(question: str, context: str) -> str:
+# -----------------------------
+# Prompts
+# -----------------------------
+def _build_prompt_docs(question: str, context: str) -> str:
+    """
+    Prompt para RAG REAL sobre texto no estructurado (noticias, filings, comunicados, etc.).
+    Espera que el contexto venga con etiquetas [S1], [S2]... para poder citar.
+    """
     return dedent(f"""
-    Eres un analista bursátil que trabaja con un sistema RAG conectado
-    a una base de datos vectorial de cotizaciones históricas del índice Dow Jones.
+    Eres un asistente RAG para análisis de información financiera basada en DOCUMENTOS
+    (noticias, comunicados, transcripciones, filings). Responde en español de España.
 
-    Responde en español de España en 1 solo párrafo (4–6 frases).
-    Usa SOLO los datos del CONTEXTO (proceden de la base de datos vectorial; no inventes nada).
-    No des recomendaciones de compra/venta.
+    REGLAS:
+    - Usa SOLO el CONTEXTO recuperado (no inventes).
+    - Si el contexto no contiene evidencia suficiente, responde exactamente:
+      "No disponible con la evidencia actual." y pide al usuario que acote (empresa, fecha, tema).
+    - No des recomendaciones de compra/venta.
+    - Responde en 1 solo párrafo (4–6 frases).
+    - Añade 1–3 citas al final del párrafo usando el formato [S1], [S2]... (según corresponda).
 
-    Obligatorio en la respuesta:
-    - Empieza explicando cómo está el valor en la FECHA más reciente del contexto
-      (la que aparezca primero o tenga la fecha más alta).
-    - Después, si ayuda, compara brevemente con 1–2 días anteriores del contexto.
-    - Menciona la FECHA o rango de fechas que aparezcan en el contexto.
-    - Menciona porcentajes (%) y precios (por ejemplo, cierres o variaciones) si están disponibles.
-    - Si falta algún dato, dilo (“no dispongo de X en el contexto”).
+    CONTEXTO (fragmentos recuperados del vector DB):
+    ---
+    {context.strip() or "(sin contexto)"}
+    ---
 
-    CONTEXTO (fragmentos recuperados de la BBDD vectorial del Dow Jones):
+    Pregunta del usuario: {question.strip()}
+    Respuesta (un solo párrafo, con citas [S#]):
+    """).strip()
+
+
+def _build_prompt_prices(question: str, context: str) -> str:
+    """
+    Prompt para explicar datos estructurados (precios/métricas) cuando hayas recuperado
+    un pequeño contexto numérico (por ejemplo OHLCV). No es el “RAG de documentos”, es
+    un modo diferente para métricas.
+    """
+    return dedent(f"""
+    Eres un asistente que explica métricas bursátiles a partir de datos ESTRUCTURADOS
+    (precios históricos). Responde en español de España.
+
+    REGLAS:
+    - Usa SOLO el CONTEXTO (no inventes).
+    - Si faltan datos, dilo (“no dispongo de X en el contexto”).
+    - No des recomendaciones de compra/venta.
+    - Responde en 1 párrafo (3–5 frases).
+    - Indica claramente la fecha del último dato disponible.
+    - Si el usuario pregunta "hoy" y el contexto no incluye hoy, aclara cuál es el último día disponible.
+
+    CONTEXTO:
     ---
     {context.strip() or "(sin contexto)"}
     ---
@@ -78,9 +109,9 @@ def _build_prompt(question: str, context: str) -> str:
     """).strip()
 
 
-
-
-
+# -----------------------------
+# Providers
+# -----------------------------
 def _openai_answer(prompt: str) -> str:
     from openai import OpenAI
     client = OpenAI()
@@ -100,29 +131,57 @@ def _google_answer(prompt: str) -> str:
     return (resp.text or "").strip()
 
 
+# -----------------------------
+# Fallback sin LLM
+# -----------------------------
 def _format_free_answer(question: str, context: str) -> str:
     # “modo gratis”: no llama a ninguna API, pero responde bien formado
     ctx = (context or "").strip()
     if not ctx:
-        return "No hay contexto suficiente para responder."
-    # Si hay varias líneas (métrica + titulares), usa las 2 primeras como resumen
+        return "No disponible con la evidencia actual."
     lines = [ln.strip() for ln in ctx.splitlines() if ln.strip()]
     if not lines:
-        return "No hay contexto suficiente para responder."
+        return "No disponible con la evidencia actual."
     if len(lines) == 1:
         return lines[0]
+    # mini resumen
     return f"{lines[0]} {lines[1]}"
 
 
-def generate_answer(question: str, context: str, sources: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+# -----------------------------
+# API
+# -----------------------------
+def generate_answer(
+    question: str,
+    context: str,
+    sources: Optional[List[Dict[str, Any]]] = None,
+    mode: str = "docs",  # "docs" | "prices"
+) -> Dict[str, Any]:
     """
     Devuelve dict para API:
-      { "answer": "...", "sources": [...], "use_llm": bool, "provider": str, "model": str }
+      { "answer": "...", "sources": [...], "use_llm": bool, "provider": str, "model": str, "mode": str }
+
+    mode:
+      - "docs": RAG sobre texto no estructurado con citas [S#]
+      - "prices": explicación de métricas estructuradas (precios)
     """
+    ctx = (context or "").strip()
+
+    # Control anti-alucinación (clave para evaluación)
+    if not ctx:
+        return {
+            "answer": "No disponible con la evidencia actual.",
+            "sources": sources or [],
+            "use_llm": USE_LLM,
+            "provider": PROVIDER,
+            "model": MODEL,
+            "mode": mode,
+        }
+
     if not USE_LLM:
-        answer = _format_free_answer(question, context)
+        answer = _format_free_answer(question, ctx)
     else:
-        prompt = _build_prompt(question, context)
+        prompt = _build_prompt_docs(question, ctx) if mode == "docs" else _build_prompt_prices(question, ctx)
         if PROVIDER == "google":
             answer = _google_answer(prompt)
         else:
@@ -134,11 +193,11 @@ def generate_answer(question: str, context: str, sources: Optional[List[Dict[str
         "use_llm": USE_LLM,
         "provider": PROVIDER,
         "model": MODEL,
+        "mode": mode,
     }
 
-    # Si quieres ver fuentes también en el texto (opcional)
+    # SHOW_SOURCES: mantenemos las fuentes en JSON, no pegadas al párrafo.
     if SHOW_SOURCES and out["sources"]:
-        # no lo metas dentro del párrafo del LLM, lo devuelves como metadato en JSON
         pass
 
     return out

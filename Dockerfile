@@ -27,7 +27,8 @@ COPY README.md ./
 EXPOSE 8000
 
 # Asegura que la carpeta de la VDB exista dentro del contenedor
-RUN mkdir -p /app/chroma
+RUN mkdir -p /app/data/chroma_djia
+
 
 # Comando por defecto: arrancar la API
 CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

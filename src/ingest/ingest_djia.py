@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, List, Dict
+from typing import Dict, Iterable, List
 
 import yfinance as yf
 
-from .chroma_client import col
+from .chroma_client import col_prices as col  # 👈 colección explícita de precios
 from .tickers import DJIA_TICKERS
 from .embeddings import encode
 
@@ -16,7 +16,7 @@ from .embeddings import encode
 def _build_docs_for_ticker(ticker: str, days: int = 30) -> List[Dict]:
     """
     Descarga las cotizaciones de los últimos `days` días para un ticker
-    y las convierte en documentos listos para Chroma.
+    y las convierte en documentos listos para Chroma (colección de precios).
     """
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days)
@@ -34,15 +34,15 @@ def _build_docs_for_ticker(ticker: str, days: int = 30) -> List[Dict]:
         return []
 
     docs: List[Dict] = []
-    for idx, (date, row) in enumerate(df.iterrows()):
+    for date, row in df.iterrows():
         date_str = date.date().isoformat()          # "YYYY-MM-DD"
         date_num = int(date_str.replace("-", ""))   # 20251111
 
-        open_ = row["Open"]
-        close_ = row["Close"]
-        high_ = row["High"]
-        low_ = row["Low"]
-        vol_ = row["Volume"]
+        open_ = float(row["Open"])
+        close_ = float(row["Close"])
+        high_ = float(row["High"])
+        low_ = float(row["Low"])
+        vol_ = float(row["Volume"])
 
         text = (
             f"Ticker: {ticker}\n"
@@ -56,13 +56,15 @@ def _build_docs_for_ticker(ticker: str, days: int = 30) -> List[Dict]:
 
         docs.append(
             {
-                "id": f"{ticker}_{date_str}_{idx}",
+                # 👇 ID determinista para evitar duplicados entre ejecuciones
+                "id": f"{ticker}_{date_str}",
                 "document": text,
                 "metadata": {
                     "ticker": ticker,
-                    "date": date_str,      # para leer
-                    "date_num": date_num,  # para filtros numéricos
+                    "date": date_str,      # legible
+                    "date_num": date_num,  # filtrable numéricamente
                     "source": "yfinance_prices",
+                    "doc_type": "prices",
                 },
             }
         )
@@ -74,6 +76,8 @@ def ingest(tickers: Iterable[str], days: int = 30) -> int:
     """
     Ingesta en Chroma las cotizaciones de los tickers indicados.
     Usa la misma función de embeddings (encode) que el resto del sistema.
+
+    Nota: si la colección soporta upsert, lo usamos para no duplicar.
     """
     collection = col
 
@@ -100,12 +104,22 @@ def ingest(tickers: Iterable[str], days: int = 30) -> int:
     # Embeddings con tu modelo (misma dimensión que la colección)
     embeddings = encode(all_docs, is_query=False)
 
-    collection.add(
-        ids=all_ids,
-        documents=all_docs,
-        metadatas=all_metadatas,
-        embeddings=embeddings,
-    )
+    # Preferimos upsert para que re-ingestas no dupliquen
+    if hasattr(collection, "upsert"):
+        collection.upsert(
+            ids=all_ids,
+            documents=all_docs,
+            metadatas=all_metadatas,
+            embeddings=embeddings,
+        )
+    else:
+        # Fallback: add (podría duplicar si no limpias antes)
+        collection.add(
+            ids=all_ids,
+            documents=all_docs,
+            metadatas=all_metadatas,
+            embeddings=embeddings,
+        )
 
     return len(all_docs)
 
@@ -142,7 +156,7 @@ def main(argv=None) -> None:
 
     print(f"[INGEST] Tickers: {', '.join(tickers)}")
     n_docs = ingest(tickers, days=30)
-    print(f"[INGEST] Documentos ingestados: {n_docs}")
+    print(f"[INGEST] Documentos ingestados/actualizados: {n_docs}")
 
     cleanup(days=30)
     print("[INGEST] Limpieza de documentos antiguos completada.")
